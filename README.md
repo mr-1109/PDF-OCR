@@ -99,7 +99,7 @@ Open your browser and go to: `http://127.0.0.1:8080`
 ### Single PDF
 
 1. Click **"Choose File"** and select a PDF
-2. (Optional) Set page range, DPI, and whether to include area extraction
+2. (Optional) Set page range and whether to include area extraction — **always set DPI to 250**
 3. Click **"Run OCR"**
 4. Wait for progress — results appear on screen
 5. Click **"Download Excel"** to save the `.xlsx`
@@ -107,7 +107,7 @@ Open your browser and go to: `http://127.0.0.1:8080`
 ### Folder of PDFs
 
 1. Click **"Upload Folder"** and select a folder containing PDFs
-2. Set options (DPI, include area, etc.)
+2. Set options — **always use DPI 250**, include area if needed
 3. Click **"Run Folder OCR"**
 4. Each PDF is processed one by one with live progress
 5. Excel files are saved automatically to a `processed excel` folder next to your source folder
@@ -132,7 +132,7 @@ Key settings at the top of `app.py`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `dpi` | `200` | Render resolution — higher = slower but more accurate |
+| `dpi` | `200` | Render resolution — **always use 250 DPI** for best accuracy |
 | `HEADER_HEIGHT` | `114` | PDF layout constant (pixels) |
 | `CARD_HEIGHT` | `330` | Voter card height (pixels) |
 | `MAX_CELLS` | `30` | Max voter cards per page |
@@ -151,7 +151,7 @@ tesseract --list-langs
 ```
 
 **App is slow**  
-→ Reduce DPI (try 150). OCR is CPU-intensive — lower DPI speeds up processing significantly.
+→ OCR is CPU-intensive. Always run at **250 DPI** for best accuracy — do not go lower as it degrades extraction quality.
 
 **Port already in use**  
 → Kill existing process:
