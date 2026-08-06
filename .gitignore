@@ -1,0 +1,20 @@
+# Generated / cache
+graphify-out/
+__pycache__/
+*.pyc
+*.pyo
+
+# Flask runtime
+voter_ocr_web/uploads/
+voter_ocr_web/excel_outputs/
+voter_ocr_web/processed_pdfs/
+voter_ocr_web/app_*.log
+voter_ocr_web/app_*.pid
+
+# Virtual env
+voter_ocr_web/venv/
+venv/
+env/
+
+# OS
+.DS_Store

@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voter List OCR</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --bg: #f0f4ff;
+            --card: #ffffff;
+            --text: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --success: #10b981;
+            --accent: #8b5cf6;
+        }
+        * { box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+        }
+        .app-header {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            color: white;
+            padding: 20px 0 18px;
+            box-shadow: 0 4px 20px rgba(37,99,235,0.25);
+        }
+        .app-header h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
+        .app-header p { margin: 4px 0 0; opacity: .85; font-size: .85rem; }
+        .main-card {
+            background: var(--card);
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+            border: 1px solid var(--border);
+            padding: 28px;
+            margin-top: 24px;
+        }
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .2s;
+            background: #fafbff;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--primary);
+            background: #eef2ff;
+        }
+        .upload-zone i { font-size: 2.5rem; color: var(--primary); margin-bottom: 12px; }
+        .upload-zone p { margin: 0; color: var(--text-muted); }
+        .upload-zone .file-name { font-weight: 600; color: var(--text); margin-top: 8px; }
+        .upload-zone-compact { padding: 32px 20px; }
+        .btn-primary {
+            background: var(--primary);
+            border: none;
+            border-radius: 10px;
+            padding: 10px 24px;
+            font-weight: 600;
+        }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-outline { border-radius: 10px; padding: 8px 20px; font-weight: 500; }
+        .spinner { animation: spin .6s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .results-table {
+            font-size: .85rem;
+            max-height: 500px;
+            overflow: auto;
+        }
+        .results-table thead { position: sticky; top: 0; background: var(--card); z-index: 2; }
+        .results-table th {
+            background: #f8fafc;
+            border-bottom: 2px solid var(--border);
+            white-space: nowrap;
+            font-weight: 600;
+        }
+        .results-table td { vertical-align: middle; }
+        .cell-badge {
+            background: #eef2ff;
+            color: var(--primary);
+            border-radius: 20px;
+            padding: 2px 10px;
+            font-size: .75rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .preview-img {
+            max-width: 100%;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        .stat-item {
+            text-align: center;
+            padding: 12px 8px;
+        }
+        .stat-number {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary);
+            display: block;
+        }
+        .stat-label {
+            font-size: .8rem;
+            color: var(--text-muted);
+        }
+        #pageFromInput, #pageToInput { max-width: 80px; display: inline-block; }
+        #dpiInput { max-width: 90px; display: inline-block; }
+        .ocr-text { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ocr-text:hover { overflow: visible; white-space: normal; position: relative; background: white; z-index: 10; padding: 4px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.1); border-radius: 6px; }
+        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+        .download-bar {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .download-bar .count { font-weight: 600; color: var(--success); }
+        .batch-log {
+            max-height: 260px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+        .batch-log-row {
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+            font-size: .85rem;
+        }
+        .batch-log-row:last-child { border-bottom: 0; }
+        .batch-path {
+            color: var(--text-muted);
+            overflow-wrap: anywhere;
+            font-size: .78rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<header class="app-header">
+    <div class="container">
+        <div class="d-flex align-items-center gap-3">
+            <i class="bi bi-file-earmark-pdf-fill fs-2"></i>
+            <div>
+                <h1>Voter List OCR</h1>
+                <p>Upload PDFs → Extract voter details → Download or save Excel</p>
+            </div>
+        </div>
+    </div>
+</header>
+
+<main class="container pb-5">
+    <div class="main-card">
+        <!-- Upload -->
+        <h6 class="fw-bold mb-3"><i class="bi bi-file-earmark-pdf me-1"></i> Single PDF</h6>
+        <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+            <i class="bi bi-cloud-upload"></i>
+            <p>Drop PDF here or click to browse</p>
+            <p class="file-name" id="fileName"></p>
+            <input type="file" id="fileInput" accept=".pdf" hidden>
+        </div>
+
+        <!-- Options -->
+        <div class="d-flex flex-wrap gap-3 align-items-center mt-4">
+            <div class="d-flex align-items-center gap-2">
+                <label class="form-label mb-0 text-nowrap">From Page:</label>
+                <input type="number" id="pageFromInput" class="form-control form-control-sm" value="0" min="0">
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <label class="form-label mb-0 text-nowrap">To Page:</label>
+                <input type="number" id="pageToInput" class="form-control form-control-sm" value="0" min="0">
+                <span class="text-muted small" id="pageTotalLabel"></span>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <label class="form-label mb-0 text-nowrap">DPI:</label>
+                <input type="number" id="dpiInput" class="form-control form-control-sm" value="200" min="100" max="600" step="50">
+            </div>
+            <button class="btn btn-primary" id="processBtn" onclick="processPDF(false)" disabled>
+                <i class="bi bi-magic"></i> Run OCR
+            </button>
+            <button class="btn btn-outline-primary btn-outline" id="processWithAreaBtn" onclick="processPDF(true)" disabled>
+                <i class="bi bi-geo-alt"></i> Run OCR with Area
+            </button>
+        </div>
+
+        <!-- Progress -->
+        <div id="progressArea" class="mt-3 d-none">
+            <div class="d-flex align-items-center gap-3 mb-2">
+                <div class="spinner-border spinner text-primary" role="status" style="width:1.2rem;height:1.2rem"></div>
+                <span id="progressText">Processing...</span>
+            </div>
+            <div class="progress" style="height:20px;">
+                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%">0%</div>
+            </div>
+            <div class="d-flex justify-content-between small text-muted mt-1">
+                <span id="progressElapsed">Elapsed: 0s</span>
+                <span id="progressETA">ETA: --</span>
+            </div>
+        </div>
+
+        <hr class="my-4">
+
+        <!-- Batch Upload -->
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+            <h6 class="fw-bold mb-0"><i class="bi bi-folder2-open me-1"></i> Folder Batch</h6>
+            <span class="text-muted small">Uses the same page range and DPI · 4 PDFs at a time</span>
+        </div>
+        <div class="upload-zone upload-zone-compact" id="folderUploadZone" onclick="document.getElementById('folderInput').click()">
+            <i class="bi bi-folder-symlink"></i>
+            <p>Select a folder of PDFs</p>
+            <p class="file-name" id="folderName"></p>
+            <input type="file" id="folderInput" accept=".pdf,application/pdf" webkitdirectory directory multiple hidden>
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+            <button class="btn btn-primary" id="batchProcessBtn" onclick="processFolder(false)" disabled>
+                <i class="bi bi-play-circle"></i> Run Folder OCR
+            </button>
+            <button class="btn btn-outline-primary btn-outline" id="batchProcessWithAreaBtn" onclick="processFolder(true)" disabled>
+                <i class="bi bi-geo-alt"></i> Run Folder OCR with Area
+            </button>
+            <span class="text-muted small" id="batchFolderPaths"></span>
+        </div>
+
+        <div id="batchProgressArea" class="mt-3 d-none">
+            <div class="d-flex align-items-center gap-3 mb-2">
+                <div class="spinner-border spinner text-primary" role="status" style="width:1.2rem;height:1.2rem"></div>
+                <span id="batchProgressText">Processing folder...</span>
+            </div>
+            <div class="progress" style="height:20px;">
+                <div id="batchProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%">0%</div>
+            </div>
+            <div class="d-flex justify-content-between small text-muted mt-1">
+                <span id="batchProgressElapsed">Processed: 0</span>
+                <span id="batchProgressETA">ETA: --</span>
+            </div>
+            <div class="batch-log mt-3" id="batchLog"></div>
+        </div>
+    </div>
+
+    <!-- Preview & Results -->
+    <div id="resultsArea" class="d-none">
+        <div class="main-card">
+            <div class="row g-3">
+                <div class="col-md-5">
+                    <h6 class="fw-bold mb-2"><i class="bi bi-image me-1"></i> Page Preview</h6>
+                    <img id="previewImg" class="preview-img" alt="Page preview">
+                    <p class="text-muted small mt-1 mb-0" id="imageSize"></p>
+                </div>
+                <div class="col-md-7">
+                    <div class="row g-2">
+                        <div class="col-4 stat-item">
+                            <span class="stat-number" id="statCells">0</span>
+                            <span class="stat-label">Cells Found</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="main-card">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                <h6 class="fw-bold mb-0"><i class="bi bi-table me-1"></i> OCR Results</h6>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-success btn-outline" onclick="downloadCSV()">
+                        <i class="bi bi-filetype-csv"></i> CSV
+                    </button>
+                    <button class="btn btn-outline-primary btn-outline" onclick="downloadXLSX()">
+                        <i class="bi bi-file-earmark-excel"></i> Excel
+                    </button>
+                </div>
+            </div>
+            <div class="results-table">
+                <table class="table table-hover table-sm mb-0">
+                    <thead>
+                        <tr id="resultsHeaderRow">
+                            <th>WARD_NO</th>
+                            <th>PART_NO</th>
+                            <th>Page</th>
+                            <th>List</th>
+                            <th>Serial</th>
+                            <th>EPIC</th>
+                            <th>Name</th>
+                            <th>Relation</th>
+                            <th>F_NAME</th>
+                            <th>House</th>
+                            <th>Age</th>
+                            <th>Gender</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let currentData = null;
+let folderFiles = [];
+const BATCH_WORKER_COUNT = 4;
+
+// Upload zone behavior
+const zone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const folderZone = document.getElementById('folderUploadZone');
+const folderInput = document.getElementById('folderInput');
+
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+folderZone.addEventListener('dragover', e => { e.preventDefault(); folderZone.classList.add('dragover'); });
+folderZone.addEventListener('dragleave', () => folderZone.classList.remove('dragover'));
+folderZone.addEventListener('drop', e => {
+    e.preventDefault();
+    folderZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFolderFiles(e.dataTransfer.files);
+});
+folderInput.addEventListener('change', () => { if (folderInput.files.length) handleFolderFiles(folderInput.files); });
+
+function handleFile(file) {
+    if (file.type !== 'application/pdf') {
+        showToast('Please select a PDF file', 'danger');
+        return;
+    }
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('processBtn').disabled = false;
+    document.getElementById('processWithAreaBtn').disabled = false;
+    currentData = null;
+    document.getElementById('resultsArea').classList.add('d-none');
+
+    // Auto-detect page count
+    const form = new FormData();
+    form.append('file', file);
+    fetch('/info', { method: 'POST', body: form })
+        .then(r => r.json())
+        .then(data => {
+            const total = data.total_pages;
+            document.getElementById('pageTotalLabel').textContent = `/ ${total} pages`;
+            document.getElementById('pageToInput').max = total - 1;
+            document.getElementById('pageToInput').placeholder = `0-${total - 1}`;
+            document.getElementById('pageToInput').value = total - 1;
+        })
+        .catch(() => {});
+}
+
+function handleFolderFiles(files) {
+    folderFiles = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.pdf'));
+    const folderName = document.getElementById('folderName');
+    const batchBtn = document.getElementById('batchProcessBtn');
+    const batchAreaBtn = document.getElementById('batchProcessWithAreaBtn');
+
+    if (!folderFiles.length) {
+        folderName.textContent = '';
+        batchBtn.disabled = true;
+        batchAreaBtn.disabled = true;
+        showToast('No PDF files found in the selected folder', 'danger');
+        return;
+    }
+
+    const firstPath = folderFiles[0].webkitRelativePath || folderFiles[0].name;
+    const displayFolder = firstPath.includes('/') ? firstPath.split('/')[0] : 'Selected folder';
+    folderName.textContent = `${displayFolder} (${folderFiles.length} PDFs)`;
+    batchBtn.disabled = false;
+    batchAreaBtn.disabled = false;
+    document.getElementById('batchProgressArea').classList.add('d-none');
+    document.getElementById('batchLog').innerHTML = '';
+    document.getElementById('batchFolderPaths').textContent = '';
+}
+
+async function processPDF(includeArea = false) {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const btn = document.getElementById(includeArea ? 'processWithAreaBtn' : 'processBtn');
+    document.getElementById('processBtn').disabled = true;
+    document.getElementById('processWithAreaBtn').disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner spinner-border-sm me-1"></span> Processing...';
+
+    const progressArea = document.getElementById('progressArea');
+    progressArea.classList.remove('d-none');
+    document.getElementById('progressText').textContent = includeArea ? 'Starting with Area...' : 'Starting...';
+    document.getElementById('progressBar').style.width = '0%';
+    document.getElementById('progressBar').textContent = '0%';
+    document.getElementById('progressElapsed').textContent = 'Elapsed: 0s';
+    document.getElementById('progressETA').textContent = 'ETA: --';
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('page_from', document.getElementById('pageFromInput').value || '0');
+    form.append('page_to', document.getElementById('pageToInput').value || '0');
+    form.append('dpi', document.getElementById('dpiInput').value || '200');
+    if (includeArea) form.append('include_area', '1');
+
+    // POST the file, SSE response streams progress
+    fetch('/process', {
+        method: 'POST',
+        body: form
+    }).then(async (response) => {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const msg = JSON.parse(line.slice(6));
+
+                    if (msg.type === 'progress') {
+                        const pct = Math.round((msg.current / msg.total) * 100);
+                        document.getElementById('progressText').textContent = `Page ${msg.current} of ${msg.total}`;
+                        document.getElementById('progressBar').style.width = pct + '%';
+                        document.getElementById('progressBar').textContent = pct + '%';
+                        document.getElementById('progressElapsed').textContent = `Elapsed: ${msg.elapsed}s`;
+                        document.getElementById('progressETA').textContent = msg.eta > 0 ? `ETA: ${msg.eta}s` : 'ETA: finishing...';
+                    } else if (msg.type === 'result') {
+                        // Done — show results
+                        currentData = msg;
+                        document.getElementById('previewImg').src = msg.preview;
+                        document.getElementById('imageSize').textContent = `Size: ${msg.image_size}  ·  Pages: ${msg.page_from + 1}-${msg.page_to + 1} of ${msg.total_pages}`;
+
+                        document.getElementById('statCells').textContent = msg.cells.length;
+
+                        renderResultsTable(msg);
+                        document.getElementById('resultsArea').classList.remove('d-none');
+                        showToast(`Found ${msg.cells.length} cells`, 'success');
+
+                        progressArea.classList.add('d-none');
+                        resetProcessButtons();
+                    } else if (msg.type === 'error') {
+                        throw new Error(msg.message);
+                    }
+                } catch (e) {
+                    if (e.message !== 'Unexpected end of JSON input') {
+                        showToast(e.message, 'danger');
+                        progressArea.classList.add('d-none');
+                        resetProcessButtons();
+                    }
+                }
+            }
+        }
+    }).catch(err => {
+        showToast(err.message, 'danger');
+        progressArea.classList.add('d-none');
+        resetProcessButtons();
+    });
+}
+
+async function processFolder(includeArea = false) {
+    if (!folderFiles.length) return;
+
+    const btn = document.getElementById(includeArea ? 'batchProcessWithAreaBtn' : 'batchProcessBtn');
+    document.getElementById('batchProcessBtn').disabled = true;
+    document.getElementById('batchProcessWithAreaBtn').disabled = true;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner spinner-border-sm me-1"></span> Processing...';
+
+    const progressArea = document.getElementById('batchProgressArea');
+    progressArea.classList.remove('d-none');
+    document.getElementById('batchProgressText').textContent = includeArea ? 'Starting folder Area batch...' : 'Starting folder batch...';
+    document.getElementById('batchProgressBar').style.width = '0%';
+    document.getElementById('batchProgressBar').textContent = '0%';
+    document.getElementById('batchProgressElapsed').textContent = 'Processed: 0';
+    document.getElementById('batchProgressETA').textContent = 'ETA: --';
+    document.getElementById('batchLog').innerHTML = '';
+    document.getElementById('batchFolderPaths').textContent = '';
+
+    const pageFrom = document.getElementById('pageFromInput').value || '0';
+    const pageTo = document.getElementById('pageToInput').value || '0';
+    const dpi = document.getElementById('dpiInput').value || '200';
+    const totalFiles = folderFiles.length;
+    const relativePaths = folderFiles.map(file => file.webkitRelativePath || file.name);
+    const firstRelativePath = relativePaths[0] || '';
+    const sourceFolderHint = firstRelativePath.includes('/') ? firstRelativePath.split('/')[0] : 'Selected folder';
+    let finishedFiles = 0;
+    let successCount = 0;
+    let failureCount = 0;
+
+    try {
+        const startRes = await fetch('/batch-start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                total_files: totalFiles,
+                include_area: includeArea,
+                source_folder_hint: sourceFolderHint,
+                relative_paths: relativePaths
+            })
+        });
+        if (!startRes.ok) throw new Error(`Batch start failed (${startRes.status})`);
+
+        const batch = await startRes.json();
+        if (!batch.batch_id) throw new Error(batch.error || 'Batch start failed');
+
+        document.getElementById('batchFolderPaths').textContent = `Excel: ${batch.output_folder} | PDFs: ${batch.processed_folder}`;
+        appendBatchLog('Started', `${totalFiles} PDFs`, batch.output_folder, 'info');
+
+        const fileProgress = Array(totalFiles).fill(0);
+        let nextIndex = 0;
+
+        async function runFile(index, workerNumber) {
+            const file = folderFiles[index];
+            const form = new FormData();
+            form.append('file', file, file.webkitRelativePath || file.name);
+            form.append('batch_id', batch.batch_id);
+            form.append('file_index', String(index + 1));
+            form.append('total_files', String(totalFiles));
+            form.append('page_from', pageFrom);
+            form.append('page_to', pageTo);
+            form.append('dpi', dpi);
+            form.append('include_area', includeArea ? '1' : '0');
+
+            let settled = false;
+
+            function finishFile(success, name, detail) {
+                if (settled) return;
+                settled = true;
+                finishedFiles += 1;
+                fileProgress[index] = 1;
+                if (success) {
+                    successCount += 1;
+                    appendBatchLog('Saved', name, detail, 'success');
+                } else {
+                    failureCount += 1;
+                    appendBatchLog('Skipped', name, detail, 'danger');
+                }
+                updateBatchOverall(fileProgress, finishedFiles, totalFiles);
+            }
+
+            try {
+                const response = await fetch('/batch-process-file', {
+                    method: 'POST',
+                    body: form
+                });
+
+                if (!response.ok) {
+                    finishFile(false, file.name, `Upload failed (${response.status})`);
+                    return;
+                }
+
+                await readSSEMessages(response, msg => {
+                    if (msg.type === 'file_start') {
+                        document.getElementById('batchProgressText').textContent = `Worker ${workerNumber}: ${msg.filename}`;
+                        appendBatchLog('Processing', `Worker ${workerNumber}: ${msg.filename}`, '', 'info');
+                    } else if (msg.type === 'file_progress') {
+                        fileProgress[index] = Math.max(fileProgress[index], msg.current / msg.total);
+                        document.getElementById('batchProgressText').textContent = `Worker ${workerNumber}: ${msg.filename} page ${msg.current} of ${msg.total}`;
+                        updateBatchOverall(fileProgress, finishedFiles, totalFiles);
+                        document.getElementById('batchProgressETA').textContent = msg.eta > 0 ? `File ETA: ${msg.eta}s` : 'File ETA: finishing...';
+                    } else if (msg.type === 'file_done') {
+                        finishFile(true, msg.filename, `${msg.excel_path} (${msg.cells} cells)`);
+                    } else if (msg.type === 'file_error') {
+                        finishFile(false, msg.filename || file.name, msg.error);
+                    } else if (msg.type === 'error') {
+                        throw new Error(msg.message);
+                    }
+                });
+
+                if (!settled) {
+                    finishFile(false, file.name, 'Processing ended without a result');
+                }
+            } catch (err) {
+                finishFile(false, file.name, err.message);
+            }
+        }
+
+        async function worker(workerNumber) {
+            while (nextIndex < folderFiles.length) {
+                const index = nextIndex;
+                nextIndex += 1;
+                await runFile(index, workerNumber);
+            }
+        }
+
+        const workers = Array.from(
+            { length: Math.min(BATCH_WORKER_COUNT, totalFiles) },
+            (_unused, i) => worker(i + 1)
+        );
+        await Promise.all(workers);
+
+        document.getElementById('batchProgressText').textContent = `Done: ${successCount} saved, ${failureCount} skipped`;
+        document.getElementById('batchProgressBar').style.width = '100%';
+        document.getElementById('batchProgressBar').textContent = '100%';
+        document.getElementById('batchProgressETA').textContent = 'ETA: complete';
+        document.getElementById('batchFolderPaths').textContent = `Excel: ${batch.output_folder} | PDFs: ${batch.processed_folder}`;
+        showToast(`Folder batch complete: ${successCount} saved, ${failureCount} skipped`, 'success');
+    } catch (err) {
+        showToast(err.message, 'danger');
+    } finally {
+        resetBatchButton();
+    }
+}
+
+async function readSSEMessages(response, onMessage) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6);
+            if (!raw.trim()) continue;
+            onMessage(JSON.parse(raw));
+        }
+    }
+}
+
+function updateBatchOverall(fileProgress, finishedFiles, totalFiles) {
+    const progressTotal = fileProgress.reduce((sum, value) => sum + value, 0);
+    const pct = Math.round((progressTotal / totalFiles) * 100);
+    document.getElementById('batchProgressBar').style.width = pct + '%';
+    document.getElementById('batchProgressBar').textContent = pct + '%';
+    document.getElementById('batchProgressElapsed').textContent = `Processed: ${finishedFiles} / ${totalFiles}`;
+}
+
+function downloadCSV() { downloadFile('csv'); }
+function downloadXLSX() { downloadFile('xlsx'); }
+
+function renderResultsTable(msg) {
+    const headerRow = document.getElementById('resultsHeaderRow');
+    const tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '';
+
+    if (msg.area_only) {
+        headerRow.innerHTML = `
+            <th>Serial</th>
+            <th>List Type</th>
+            <th>Action</th>
+            <th>Area</th>
+        `;
+        const areaRows = [];
+        const serialIndexes = new Map();
+        msg.cells.forEach(c => {
+            const serial = (c.Serial || c.serial || '').trim();
+            if (!serial) return;
+            const row = {
+                serial,
+                listType: c['List Type'] || c.list_type || '',
+                action: c.Action || c.action || '',
+                area: c.Area || c.area || ''
+            };
+            if (serialIndexes.has(serial)) {
+                areaRows[serialIndexes.get(serial)] = row;
+            } else {
+                serialIndexes.set(serial, areaRows.length);
+                areaRows.push(row);
+            }
+        });
+
+        areaRows.forEach(c => {
+            tbody.innerHTML += `<tr>
+                <td>${escHtml(c.serial) || '-'}</td>
+                <td>${escHtml(c.listType) || '-'}</td>
+                <td>${escHtml(c.action) || '-'}</td>
+                <td class="ocr-text" title="${escHtml(c.area)}">${escHtml(c.area) || '-'}</td>
+            </tr>`;
+        });
+        return;
+    }
+
+    headerRow.innerHTML = `
+        <th>WARD_NO</th>
+        <th>PART_NO</th>
+        <th>Page</th>
+        <th>List</th>
+        <th>Serial</th>
+        <th>EPIC</th>
+        <th>Name</th>
+        <th>Relation</th>
+        <th>F_NAME</th>
+        <th>House</th>
+        <th>Age</th>
+        <th>Gender</th>
+        <th>Details</th>
+    `;
+
+    msg.cells.forEach(c => {
+        const relationFields = finalRelationFields(c);
+        const relation = c.relation || relationFields.relation;
+        const fName = c.f_name || relationFields.f_name;
+        const details = c.details || c.crop_c || '';
+        tbody.innerHTML += `<tr>
+            <td>${escHtml(c.ward_no) || '-'}</td>
+            <td>${escHtml(c.part_no) || '-'}</td>
+            <td>${c.hasOwnProperty('page') ? c.page : '-'}</td>
+            <td>${escHtml(c.list_type) || '-'}</td>
+            <td>${escHtml(c.serial || c.cell_index) || '-'}</td>
+            <td>${escHtml(c.epic) || '-'}</td>
+            <td class="ocr-text" title="${escHtml(c.name)}">${escHtml(c.name) || '-'}</td>
+            <td class="ocr-text" title="${escHtml(relation)}">${escHtml(relation) || '-'}</td>
+            <td class="ocr-text" title="${escHtml(fName)}">${escHtml(fName) || '-'}</td>
+            <td>${escHtml(c.house_number) || '-'}</td>
+            <td>${escHtml(c.age) || '-'}</td>
+            <td>${escHtml(c.gender) || '-'}</td>
+            <td class="ocr-text" title="${escHtml(details)}">${escHtml(details) || '-'}</td>
+        </tr>`;
+    });
+}
+
+async function downloadFile(fmt) {
+    if (!currentData) return;
+    try {
+        const res = await fetch(`/download/${fmt}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                cells: currentData.cells,
+                header: currentData.header,
+                include_area: Boolean(currentData.include_area),
+                area_only: Boolean(currentData.area_only),
+                filename: currentData.filename
+            })
+        });
+        if (!res.ok) throw new Error('Download failed');
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${pdfStem(currentData.filename)}.${fmt}`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`Downloaded as .${fmt}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'danger');
+    }
+}
+
+function pdfStem(filename) {
+    const name = (filename || 'voter_ocr_results.pdf').split(/[\\/]/).pop();
+    return name.replace(/\.pdf$/i, '') || 'voter_ocr_results';
+}
+
+function formatRelation(type, name) {
+    type = (type || '').trim();
+    name = (name || '').trim();
+    if (type && name) return `${type} का नाम: ${name}`;
+    if (type) return `${type} का नाम:`;
+    return name;
+}
+
+function finalRelationFields(c) {
+    const relationText = formatRelation(c.relation_type, c.relation_name);
+    const beforeColon = relationText.includes(':') ? relationText.split(':')[0] : relationText;
+    const afterColon = relationText.includes(':') ? relationText.split(':').slice(1).join(':').trim() : '';
+    let relation = '';
+    if (beforeColon.includes('पति')) relation = 'husband';
+    else if (beforeColon.includes('पिता')) relation = 'father';
+    else if (beforeColon.includes('माता')) relation = 'mother';
+    else if (beforeColon.includes('अन्य')) relation = 'other';
+    return { relation, f_name: afterColon || (c.relation_name || '').trim() };
+}
+
+function resetProcessButtons() {
+    document.getElementById('processBtn').disabled = !fileInput.files.length;
+    document.getElementById('processWithAreaBtn').disabled = !fileInput.files.length;
+    document.getElementById('processBtn').innerHTML = '<i class="bi bi-magic"></i> Run OCR';
+    document.getElementById('processWithAreaBtn').innerHTML = '<i class="bi bi-geo-alt"></i> Run OCR with Area';
+}
+
+function resetBatchButton() {
+    const btn = document.getElementById('batchProcessBtn');
+    const areaBtn = document.getElementById('batchProcessWithAreaBtn');
+    btn.disabled = folderFiles.length === 0;
+    areaBtn.disabled = folderFiles.length === 0;
+    btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Folder OCR';
+    areaBtn.innerHTML = '<i class="bi bi-geo-alt"></i> Run Folder OCR with Area';
+}
+
+function appendBatchLog(status, name, detail = '', tone = 'info') {
+    const log = document.getElementById('batchLog');
+    const row = document.createElement('div');
+    const badge = tone === 'success' ? 'text-bg-success' : tone === 'danger' ? 'text-bg-danger' : 'text-bg-secondary';
+    row.className = 'batch-log-row';
+    row.innerHTML = `<div><span class="badge ${badge} me-2">${escHtml(status)}</span><strong>${escHtml(name)}</strong><div class="batch-path">${escHtml(detail)}</div></div>`;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+}
+
+function escHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
+
+function showToast(msg, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast align-items-center text-bg-${type} border-0 show`;
+    toast.role = 'alert';
+    toast.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+    container.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, 5000);
+}
+</script>
+</body>
+</html>
