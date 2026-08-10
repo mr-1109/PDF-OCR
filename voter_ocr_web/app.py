@@ -50,6 +50,8 @@ AREA_IGNORE_TERMS = (
 )
 ACTION_CODES = {'E', 'S', 'R', 'O'}
 DEVANAGARI_DIGITS = str.maketrans('०१२३४५६७८९', '0123456789')
+PDF_MODE_WITH_PHOTO = 'with_photo'
+PDF_MODE_WITHOUT_PHOTO = 'without_photo'
 AREA_ONLY_EXPORT_COLUMNS = ['Serial', 'List Type', 'Action', 'Area']
 FULL_EXPORT_COLUMNS = [
     'WARD_NO', 'PART_NO', 'Page', 'List Type', 'Action', 'Serial', 'EPIC',
@@ -57,7 +59,7 @@ FULL_EXPORT_COLUMNS = [
 ]
 
 
-def pdf_page_to_image(pdf_path, page_num=0, dpi=200):
+def pdf_page_to_image(pdf_path, page_num=0, dpi=250):
     doc = fitz.open(pdf_path)
     try:
         if page_num >= len(doc):
@@ -86,6 +88,15 @@ def ocr_image_confidence(img):
 
 def _parse_bool(value):
     return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _parse_pdf_mode(value):
+    text = str(value or '').strip().lower().replace('-', '_').replace(' ', '_')
+    if text in ('without_photo', 'withoutphoto', 'no_photo', 'nophoto'):
+        return PDF_MODE_WITHOUT_PHOTO
+    if text in ('with_photo', 'withphoto', 'photo'):
+        return PDF_MODE_WITH_PHOTO
+    return ''
 
 
 def _group_close_numbers(values, tolerance=1.2):
@@ -462,6 +473,21 @@ def _block_text(block):
     return ''
 
 
+def _pdf_block_lines(block):
+    if block.get('type') != 0:
+        return []
+    lines = []
+    for line in block.get('lines', []):
+        text = ''.join(span.get('text', '') for span in line.get('spans', [])).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _pdf_block_text_with_lines(block):
+    return '\n'.join(_pdf_block_lines(block))
+
+
 def _blocks_in_bbox(blocks, bbox, block_type=None):
     left, top, right, bottom = bbox
     matched = []
@@ -480,6 +506,12 @@ def _text_in_bbox(blocks, bbox):
     text_blocks = _blocks_in_bbox(blocks, bbox, block_type=0)
     ordered = sorted(text_blocks, key=lambda block: (block['bbox'][1], block['bbox'][0]))
     return '\n'.join(filter(None, (_block_text(block) for block in ordered)))
+
+
+def _text_with_lines_in_bbox(blocks, bbox):
+    text_blocks = _blocks_in_bbox(blocks, bbox, block_type=0)
+    ordered = sorted(text_blocks, key=lambda block: (block['bbox'][1], block['bbox'][0]))
+    return '\n'.join(filter(None, (_pdf_block_text_with_lines(block) for block in ordered)))
 
 
 def _photo_left_in_card(blocks, bbox):
@@ -562,6 +594,382 @@ def _relation_from_hindi_label(label):
     if 'अन्य' in label:
         return 'other'
     return ''
+
+
+def _without_photo_relation_from_label(label):
+    compact = re.sub(r'\s+', '', str(label or ''))
+    has_name_label = any(term in compact for term in ('नपम', 'नाम', 'नरम'))
+    has_relation_joiner = any(term in compact for term in ('कप', 'का', 'कर'))
+    if not (has_name_label and has_relation_joiner):
+        return ''
+    if any(term in compact for term in ('पति', 'पनत', 'पलत', 'पतत')):
+        return 'husband'
+    if any(term in compact for term in ('पिता', 'नपता', 'नपतर', 'नपतप', 'नपतर', 'पितर')):
+        return 'father'
+    if any(term in compact for term in ('माता', 'मरता', 'मरतर', 'मरतप', 'मपतप', 'मपतर')):
+        return 'mother'
+    if any(term in compact for term in ('अन्य', 'अनय')):
+        return 'other'
+    return ''
+
+
+def _without_photo_gender(value):
+    text = str(value or '')
+    compact = re.sub(r'\s+', '', text)
+    if any(term in compact for term in ('पुरूष', 'पुरुष', 'पपरष', 'पचरष', 'परष')):
+        return 'पुरूष'
+    if any(term in compact for term in ('स्त्री', 'महिला', 'सर', 'सल')):
+        return 'स्त्री'
+    return _normalize_gender(text)
+
+
+def _parse_without_photo_demographics(value):
+    text = str(value or '').translate(DEVANAGARI_DIGITS)
+    parts = [part.strip(' :-;,') for part in re.split(r'[\n|]+', text) if part.strip(' :-;,')]
+    age = ''
+    gender = ''
+    house_number = ''
+
+    for idx, part in enumerate(parts):
+        if not age:
+            age_match = re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]?\s*(\d{1,3})', part)
+            if age_match:
+                age = age_match.group(1)
+                for next_part in parts[idx + 1:]:
+                    if not gender:
+                        gender = _without_photo_gender(next_part)
+                        if gender:
+                            continue
+                    if not house_number:
+                        cleaned = _clean_house_number(next_part)
+                        if cleaned and cleaned != '.':
+                            house_number = cleaned
+                            break
+
+    if not age:
+        age_match = re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]?\s*(\d{1,3})', text)
+        if age_match:
+            age = age_match.group(1)
+
+    if not gender:
+        gender = _without_photo_gender(text)
+
+    if not house_number:
+        age_line = next((part for part in parts if re.search(r'(?:आयु|आयप|आयच|आजच)', part)), '')
+        nums = re.findall(r'\d+\s*[A-Za-z\u0900-\u097F]*', text.replace(age_line, ' '))
+        if nums:
+            house_number = _clean_house_number(nums[-1])
+
+    return age, gender, house_number
+
+
+def _ocr_without_photo_text_block(image, bbox, dpi, scaleup=4):
+    if image is None:
+        return ''
+    scale = dpi / 72
+    x0, y0, x1, y1 = bbox
+    pad_x = 1.5
+    pad_y = 1.0
+    crop_box = (
+        max(0, int((x0 - pad_x) * scale)),
+        max(0, int((y0 - pad_y) * scale)),
+        min(image.width, int((x1 + pad_x) * scale)),
+        min(image.height, int((y1 + pad_y) * scale)),
+    )
+    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+        return ''
+    crop = image.crop(crop_box).convert('L')
+    crop = ImageEnhance.Contrast(crop).enhance(1.7).filter(ImageFilter.SHARPEN)
+    crop = crop.resize((crop.width * scaleup, crop.height * scaleup))
+    return pytesseract.image_to_string(crop, lang='hin', config='--psm 6')
+
+
+def _person_lines_from_without_photo_text(value):
+    lines = []
+    for raw_line in _normalize_ocr_text(value).splitlines():
+        if _is_without_photo_label_text(raw_line):
+            continue
+        cleaned = _clean_person_value(raw_line)
+        cleaned = re.sub(
+            r'^(?:(?:का|क्रा|कर|कप)\s*(?:नाम|नरम|नपम|ताम)|का\s*ATH|ATH)\s*',
+            ' ',
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        partial_label = re.match(r'^.{0,4}(?:नाम|नरम|नपम|ताम)\s+', cleaned)
+        if partial_label:
+            cleaned = cleaned[partial_label.end():]
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip(' :-.,;ः')
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def _is_without_photo_label_text(value):
+    text = str(value or '')
+    compact = re.sub(r'\s+', '', text)
+    if any(term in compact for term in ('Photo', 'Available')):
+        return True
+    if re.match(r'^(?:नपम|नाम|नरम)\s*[:：]?', text.strip()):
+        return True
+    if re.match(r'^(?:ललग|लिंग|मकपन|मकरन|सनखयप|ससखजर)\s*[:：]?', text.strip()):
+        return True
+    if re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]', text):
+        return True
+    return bool(_extract_epic(text)) or bool(re.fullmatch(r'\s*\d{1,5}\s*', text))
+
+
+def _best_without_photo_name_block(blocks, bbox, image=None, dpi=250):
+    left, top, right, bottom = bbox
+    candidates = []
+    for block in _blocks_in_bbox(blocks, bbox, block_type=0):
+        x0, y0, x1, y1 = block['bbox']
+        if not (left + 8 <= x0 <= right - 30 and top + 5 <= y0 <= bottom - 12):
+            continue
+        lines = _person_lines_from_without_photo_text(_pdf_block_text_with_lines(block))
+        ocr_lines = _person_lines_from_without_photo_text(
+            _ocr_without_photo_text_block(image, (x0, y0, x1, y1), dpi)
+        )
+        if len(ocr_lines) >= len(lines) and sum(_person_value_score(line) for line in ocr_lines) >= 0:
+            lines = ocr_lines
+        if not lines:
+            continue
+        score = sum(_person_value_score(line) for line in lines)
+        score += 20 if len(lines) >= 2 else 0
+        score += 30 if ocr_lines and lines == ocr_lines else 0
+        score -= max(0, x0 - left - 55)
+        score -= abs((y0 - top) - 22)
+        candidates.append((score, lines))
+
+    if not candidates:
+        return '', ''
+
+    lines = max(candidates, key=lambda item: item[0])[1]
+    name = lines[0] if lines else ''
+    f_name = ' '.join(lines[1:]).strip() if len(lines) > 1 else ''
+    return name, f_name
+
+
+def _parse_without_photo_card(blocks, bbox, image=None, dpi=250):
+    card_text = _text_with_lines_in_bbox(blocks, bbox)
+    name, f_name = _best_without_photo_name_block(blocks, bbox, image=image, dpi=dpi)
+    relation = ''
+    age = ''
+    gender = ''
+    house_number = ''
+
+    for block in _blocks_in_bbox(blocks, bbox, block_type=0):
+        text = _pdf_block_text_with_lines(block)
+        block_relation = _without_photo_relation_from_label(text)
+        if block_relation:
+            relation = block_relation
+        if re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]', text):
+            age, gender, house_number = _parse_without_photo_demographics(text)
+
+    if not any((age, gender, house_number)):
+        age, gender, house_number = _parse_without_photo_demographics(card_text)
+
+    return {
+        'epic': _extract_epic(card_text),
+        'name': name,
+        'relation': relation,
+        'f_name': f_name,
+        'relation_name': f_name,
+        'house_number': house_number,
+        'age': age,
+        'gender': gender,
+        'details': _normalize_ocr_text(card_text),
+    }
+
+
+def _segment_for_without_photo_marker(row, marker, idx, page_width):
+    marker_x = marker.get('x')
+    for left, right in row.get('segments') or []:
+        if marker_x is not None and left <= marker_x <= right:
+            return left, right
+
+    segments = row.get('segments') or []
+    if segments:
+        row_left = min(segment[0] for segment in segments)
+        card_width = sorted((right - left for left, right in segments))[len(segments) // 2]
+    else:
+        row_left = row.get('left', 0) or 0
+        card_width = (page_width - (2 * row_left)) / 3
+
+    if marker_x is None:
+        col = idx
+    else:
+        col = round((marker_x - row_left) / card_width)
+    col = max(0, min(2, int(col)))
+    left = row_left + (card_width * col)
+    right = min(page_width, left + card_width)
+    return left, right
+
+
+def _without_photo_markers_in_row(page, row):
+    markers = _card_markers_in_row(page, row['top'], row['bottom'])
+    if len(markers) <= 3:
+        return markers
+
+    segments = row.get('segments') or []
+    if segments:
+        row_left = min(segment[0] for segment in segments)
+        card_width = sorted((right - left for left, right in segments))[len(segments) // 2]
+    else:
+        row_left = row.get('left', 0) or 0
+        card_width = (page.rect.width - (2 * row_left)) / 3
+
+    by_col = {}
+    for marker in markers:
+        marker_x = marker.get('x')
+        if marker_x is None:
+            col = len(by_col)
+        else:
+            col = round((marker_x - row_left) / card_width)
+        col = max(0, min(2, int(col)))
+        current = by_col.get(col)
+        if current is None or (marker_x is not None and marker_x < current.get('x', marker_x + 1)):
+            by_col[col] = marker
+
+    return [by_col[col] for col in sorted(by_col)]
+
+
+def _without_photo_area_from_band(page, y0, y1, left_x=None):
+    if y1 - y0 < 3:
+        return ''
+    candidates = []
+    for block in page.get_text('dict').get('blocks', []):
+        if block.get('type') != 0:
+            continue
+        bx0, by0, _bx1, by1 = block['bbox']
+        if by1 <= y0 + 0.5 or by0 >= y1 - 0.5:
+            continue
+        if bx0 > page.rect.width * 0.75:
+            continue
+        if left_x is not None and abs(bx0 - left_x) > 48:
+            continue
+        text = _pdf_block_text_with_lines(block)
+        area = _clean_without_photo_area_text(text)
+        if area:
+            candidates.append((by0, area))
+    return sorted(candidates, key=lambda item: item[0])[-1][1] if candidates else ''
+
+
+def _looks_like_without_photo_area(value):
+    if not value:
+        return False
+    if len(re.sub(r'[\s,.:;()।-]+', '', value)) < 10:
+        return False
+    if len(re.findall(r'[\u0900-\u097F]', value)) < 3:
+        return False
+    if re.fullmatch(r'[\d\s./-]+', value):
+        return False
+    compact = re.sub(r'\s+', '', value)
+    reject_terms = (
+        'नपम', 'नाम', 'नरम', 'ललग', 'लिंग', 'मकपन', 'मकरन', 'आयु', 'आयप',
+        'Photo', 'Available', 'घटक', 'सपचल', 'सूची', 'पतष', 'पृष्ठ', 'जनवरर',
+        'नवधपन', 'नगरननगम', 'नगरपपनलकप', 'ननवपरचन', 'चपनपव', 'रपजय',
+        'मतदपन', 'मतदपतप', 'रसतपकर',
+    )
+    return not any(term in compact for term in reject_terms)
+
+
+def _clean_without_photo_area_text(raw_text):
+    candidates = []
+    for line in str(raw_text or '').splitlines():
+        cleaned = _normalize_area_line(line)
+        if _looks_like_without_photo_area(cleaned):
+            candidates.append(cleaned)
+    if not candidates:
+        cleaned = _normalize_area_line(raw_text)
+        if _looks_like_without_photo_area(cleaned):
+            candidates.append(cleaned)
+    return candidates[-1] if candidates else ''
+
+
+def _extract_without_photo_area_only_cells(page, current_area='', current_list_type='Main'):
+    card_rows = _detect_card_rows(page)
+    cells = []
+    previous_bottom = None
+
+    for row in card_rows:
+        band_top = previous_bottom if previous_bottom is not None else max(0, row['top'] - 38)
+        current_list_type = _list_type_from_band(page, band_top, row['top'], current_list_type)
+        area = _without_photo_area_from_band(page, band_top, row['top'], row.get('left'))
+        if area:
+            current_area = area
+
+        row_markers = _without_photo_markers_in_row(page, row)
+        for marker in row_markers:
+            action = marker.get('action', '')
+            list_type = 'Deletion' if action else current_list_type
+            cells.append({
+                'Serial': marker.get('serial', ''),
+                'serial': marker.get('serial', ''),
+                'List Type': list_type,
+                'list_type': list_type,
+                'Action': action,
+                'action': action,
+                'Area': current_area,
+                'area': current_area,
+                'area_only': True,
+            })
+        previous_bottom = row['bottom']
+
+    if previous_bottom is not None:
+        current_list_type = _list_type_from_band(page, previous_bottom, page.rect.height - 35, current_list_type)
+        trailing_area = _without_photo_area_from_band(page, previous_bottom, page.rect.height - 35, card_rows[0].get('left'))
+        if trailing_area:
+            current_area = trailing_area
+
+    return cells, current_area, current_list_type
+
+
+def _extract_without_photo_cells(page, image=None, dpi=250, current_list_type='Main'):
+    card_rows = _detect_card_rows(page)
+    page_blocks = page.get_text('dict').get('blocks', [])
+    cells = []
+    previous_bottom = None
+    cell_index = 0
+
+    for row in card_rows:
+        band_top = previous_bottom if previous_bottom is not None else max(0, row['top'] - 38)
+        current_list_type = _list_type_from_band(page, band_top, row['top'], current_list_type)
+        markers = _without_photo_markers_in_row(page, row)
+
+        for idx, marker in enumerate(markers):
+            left, right = _segment_for_without_photo_marker(row, marker, idx, page.rect.width)
+            card_bbox = (left, row['top'], right, row['bottom'])
+            parsed = _parse_without_photo_card(page_blocks, card_bbox, image=image, dpi=dpi)
+            action = marker.get('action', '')
+            list_type = 'Deletion' if action else current_list_type
+            cell_index += 1
+            cells.append({
+                'cell_index': cell_index,
+                'row': len(cells) // 3,
+                'col': idx,
+                'serial': marker.get('serial', ''),
+                'list_type': list_type,
+                'action': action,
+                'epic': parsed.get('epic', ''),
+                'name': parsed.get('name', ''),
+                'relation': parsed.get('relation', ''),
+                'f_name': parsed.get('f_name', ''),
+                'relation_name': parsed.get('relation_name', ''),
+                'house_number': parsed.get('house_number', ''),
+                'age': parsed.get('age', ''),
+                'gender': parsed.get('gender', ''),
+                'crop_a': '',
+                'crop_b': '',
+                'crop_c': parsed.get('details', ''),
+                'details': parsed.get('details', ''),
+            })
+
+        previous_bottom = row['bottom']
+
+    if previous_bottom is not None:
+        current_list_type = _list_type_from_band(page, previous_bottom, page.rect.height - 35, current_list_type)
+    return cells, current_list_type
 
 
 def _parse_with_photo_ocr_text(raw_text):
@@ -887,6 +1295,25 @@ def _fill_missing_house_numbers(cells):
             last_house = house
         elif last_house:
             cell['house_number'] = last_house
+
+
+def _dedupe_full_cells_latest_by_serial(cells):
+    first_indexes = {}
+    deduped = []
+
+    for cell in cells:
+        serial = str(cell.get('serial') or cell.get('Serial') or '').strip()
+        if not serial:
+            deduped.append(cell)
+            continue
+
+        if serial in first_indexes:
+            deduped[first_indexes[serial]] = cell
+        else:
+            first_indexes[serial] = len(deduped)
+            deduped.append(cell)
+
+    return deduped
 
 
 def extract_voter_grid(image):
@@ -1233,7 +1660,7 @@ def _save_processed_excel_and_pdf(staged_path, original_name, output_dir, proces
     }
 
 
-def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False):
+def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf_mode=''):
     try:
         doc = fitz.open(filepath)
     except Exception as exc:
@@ -1263,7 +1690,13 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False):
         current_area = ''
         current_list_type = _list_type_before_page(doc, page_from)
         ward_no, part_no = _ward_part_from_filename(os.path.basename(filepath))
-        is_with_photo = _is_with_photo_file(os.path.basename(filepath))
+        selected_pdf_mode = _parse_pdf_mode(pdf_mode)
+        if selected_pdf_mode:
+            is_with_photo = selected_pdf_mode == PDF_MODE_WITH_PHOTO
+            is_without_photo = selected_pdf_mode == PDF_MODE_WITHOUT_PHOTO
+        else:
+            is_with_photo = _is_with_photo_file(os.path.basename(filepath))
+            is_without_photo = False
         start_time = time.time()
         page_times = []
 
@@ -1275,17 +1708,32 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False):
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             if include_area:
                 header = ''
-                cells, current_area, current_list_type = _extract_area_only_cells(
-                    doc[page_num],
-                    img,
-                    dpi,
-                    current_area,
-                    current_list_type,
-                )
+                if is_without_photo:
+                    cells, current_area, current_list_type = _extract_without_photo_area_only_cells(
+                        doc[page_num],
+                        current_area,
+                        current_list_type,
+                    )
+                else:
+                    cells, current_area, current_list_type = _extract_area_only_cells(
+                        doc[page_num],
+                        img,
+                        dpi,
+                        current_area,
+                        current_list_type,
+                    )
             else:
                 if is_with_photo:
                     header = ''
                     cells, current_list_type = _extract_with_photo_cells(
+                        doc[page_num],
+                        img,
+                        dpi,
+                        current_list_type,
+                    )
+                elif is_without_photo:
+                    header = ''
+                    cells, current_list_type = _extract_without_photo_cells(
                         doc[page_num],
                         img,
                         dpi,
@@ -1318,6 +1766,8 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False):
 
         if not include_area and is_with_photo:
             _fill_missing_house_numbers(all_cells)
+        if not include_area:
+            all_cells = _dedupe_full_cells_latest_by_serial(all_cells)
 
         yield {
             'type': 'complete',
@@ -1328,6 +1778,7 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False):
             'total_pages': total_pages,
             'include_area': include_area,
             'area_only': include_area,
+            'pdf_mode': selected_pdf_mode or '',
         }
     finally:
         doc.close()
@@ -1367,12 +1818,13 @@ def process():
 
     page_from = _parse_int(request.form.get('page_from'), default=0)
     page_to = _parse_int(request.form.get('page_to'), default=0)
-    dpi = _parse_int(request.form.get('dpi'), default=200, minimum=100, maximum=600)
+    dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
+    pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
 
     def generate():
         result = None
-        for event in _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=include_area):
+        for event in _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
             if event['type'] == 'progress':
                 yield _sse(json.dumps(event))
             elif event['type'] == 'error':
@@ -1408,6 +1860,7 @@ def process():
             'total_pages': result['total_pages'],
             'include_area': result.get('include_area', False),
             'area_only': result.get('area_only', False),
+            'pdf_mode': result.get('pdf_mode', ''),
             'filename': filename,
             'image_size': f'{imgpre.width}x{imgpre.height}'
         }))
@@ -1458,8 +1911,9 @@ def batch_process_file():
     original_name = _uploaded_basename(file.filename)
     page_from = _parse_int(request.form.get('page_from'), default=0)
     page_to = _parse_int(request.form.get('page_to'), default=0)
-    dpi = _parse_int(request.form.get('dpi'), default=200, minimum=100, maximum=600)
+    dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
+    pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
     file_index = _parse_int(request.form.get('file_index'), default=1, minimum=1)
     total_files = _parse_int(request.form.get('total_files'), default=1, minimum=1)
 
@@ -1498,7 +1952,7 @@ def batch_process_file():
 
         try:
             result = None
-            for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area):
+            for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
                 if event['type'] == 'progress':
                     event.update({
                         'type': 'file_progress',
@@ -1547,8 +2001,9 @@ def batch_process():
 
     page_from = _parse_int(request.form.get('page_from'), default=0)
     page_to = _parse_int(request.form.get('page_to'), default=0)
-    dpi = _parse_int(request.form.get('dpi'), default=200, minimum=100, maximum=600)
+    dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
+    pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
 
     batch_id, staging_dir, output_dir, processed_dir = _batch_dirs(include_area=include_area)
 
@@ -1600,7 +2055,7 @@ def batch_process():
                     raise RuntimeError(item['error'])
 
                 result = None
-                for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area):
+                for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
                     if event['type'] == 'progress':
                         event.update({
                             'type': 'file_progress',

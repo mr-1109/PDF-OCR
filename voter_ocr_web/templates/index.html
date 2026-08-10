@@ -112,6 +112,12 @@
         }
         #pageFromInput, #pageToInput { max-width: 80px; display: inline-block; }
         #dpiInput { max-width: 90px; display: inline-block; }
+        .pdf-mode-option {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 10px;
+            background: #f8fafc;
+        }
         .ocr-text { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ocr-text:hover { overflow: visible; white-space: normal; position: relative; background: white; z-index: 10; padding: 4px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.1); border-radius: 6px; }
         .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
@@ -179,6 +185,14 @@
 
         <!-- Options -->
         <div class="d-flex flex-wrap gap-3 align-items-center mt-4">
+            <div class="d-flex align-items-center gap-2 pdf-mode-option">
+                <input class="form-check-input mt-0" type="checkbox" id="withPhotoInput" checked>
+                <label class="form-check-label text-nowrap" for="withPhotoInput">with photo</label>
+            </div>
+            <div class="d-flex align-items-center gap-2 pdf-mode-option">
+                <input class="form-check-input mt-0" type="checkbox" id="withoutPhotoInput">
+                <label class="form-check-label text-nowrap" for="withoutPhotoInput">without photo</label>
+            </div>
             <div class="d-flex align-items-center gap-2">
                 <label class="form-label mb-0 text-nowrap">From Page:</label>
                 <input type="number" id="pageFromInput" class="form-control form-control-sm" value="0" min="0">
@@ -190,7 +204,7 @@
             </div>
             <div class="d-flex align-items-center gap-2">
                 <label class="form-label mb-0 text-nowrap">DPI:</label>
-                <input type="number" id="dpiInput" class="form-control form-control-sm" value="200" min="100" max="600" step="50">
+                <input type="number" id="dpiInput" class="form-control form-control-sm" value="250" min="100" max="600" step="50">
             </div>
             <button class="btn btn-primary" id="processBtn" onclick="processPDF(false)" disabled>
                 <i class="bi bi-magic"></i> Run OCR
@@ -325,6 +339,25 @@ const zone = document.getElementById('uploadZone');
 const fileInput = document.getElementById('fileInput');
 const folderZone = document.getElementById('folderUploadZone');
 const folderInput = document.getElementById('folderInput');
+const withPhotoInput = document.getElementById('withPhotoInput');
+const withoutPhotoInput = document.getElementById('withoutPhotoInput');
+
+withPhotoInput.addEventListener('change', () => syncPdfMode('with_photo'));
+withoutPhotoInput.addEventListener('change', () => syncPdfMode('without_photo'));
+
+function syncPdfMode(changedMode) {
+    if (changedMode === 'with_photo') {
+        if (withPhotoInput.checked) withoutPhotoInput.checked = false;
+        else withoutPhotoInput.checked = true;
+    } else {
+        if (withoutPhotoInput.checked) withPhotoInput.checked = false;
+        else withPhotoInput.checked = true;
+    }
+}
+
+function selectedPdfMode() {
+    return withoutPhotoInput.checked ? 'without_photo' : 'with_photo';
+}
 
 zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
 zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
@@ -415,7 +448,8 @@ async function processPDF(includeArea = false) {
     form.append('file', file);
     form.append('page_from', document.getElementById('pageFromInput').value || '0');
     form.append('page_to', document.getElementById('pageToInput').value || '0');
-    form.append('dpi', document.getElementById('dpiInput').value || '200');
+    form.append('dpi', document.getElementById('dpiInput').value || '250');
+    form.append('pdf_mode', selectedPdfMode());
     if (includeArea) form.append('include_area', '1');
 
     // POST the file, SSE response streams progress
@@ -501,7 +535,7 @@ async function processFolder(includeArea = false) {
 
     const pageFrom = document.getElementById('pageFromInput').value || '0';
     const pageTo = document.getElementById('pageToInput').value || '0';
-    const dpi = document.getElementById('dpiInput').value || '200';
+    const dpi = document.getElementById('dpiInput').value || '250';
     const totalFiles = folderFiles.length;
     const relativePaths = folderFiles.map(file => file.webkitRelativePath || file.name);
     const firstRelativePath = relativePaths[0] || '';
@@ -517,6 +551,7 @@ async function processFolder(includeArea = false) {
             body: JSON.stringify({
                 total_files: totalFiles,
                 include_area: includeArea,
+                pdf_mode: selectedPdfMode(),
                 source_folder_hint: sourceFolderHint,
                 relative_paths: relativePaths
             })
@@ -542,6 +577,7 @@ async function processFolder(includeArea = false) {
             form.append('page_from', pageFrom);
             form.append('page_to', pageTo);
             form.append('dpi', dpi);
+            form.append('pdf_mode', selectedPdfMode());
             form.append('include_area', includeArea ? '1' : '0');
 
             let settled = false;

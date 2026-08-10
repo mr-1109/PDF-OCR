@@ -132,7 +132,7 @@ Key settings at the top of `app.py`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `dpi` | `200` | Render resolution — **always use 250 DPI** for best accuracy |
+| `dpi` | `250` | Render resolution — **always use 250 DPI** for best accuracy |
 | `HEADER_HEIGHT` | `114` | PDF layout constant (pixels) |
 | `CARD_HEIGHT` | `330` | Voter card height (pixels) |
 | `MAX_CELLS` | `30` | Max voter cards per page |
