@@ -52,6 +52,7 @@ ACTION_CODES = {'E', 'S', 'R', 'O'}
 DEVANAGARI_DIGITS = str.maketrans('०१२३४५६७८९', '0123456789')
 PDF_MODE_WITH_PHOTO = 'with_photo'
 PDF_MODE_WITHOUT_PHOTO = 'without_photo'
+WITHOUT_PHOTO_AGE_LABEL_PATTERN = r'(?:आयु|आयप|आयच|आजच|आखप|आखच|आखु)'
 AREA_ONLY_EXPORT_COLUMNS = ['Serial', 'List Type', 'Action', 'Area']
 FULL_EXPORT_COLUMNS = [
     'WARD_NO', 'PART_NO', 'Page', 'List Type', 'Action', 'Serial', 'EPIC',
@@ -572,6 +573,25 @@ def _clean_house_number(value):
     return '.' if re.search(r'[.,]', raw_value) else ''
 
 
+def _clean_without_photo_house_number(value):
+    house_number = _clean_house_number(value)
+    if not house_number:
+        return house_number
+
+    compact = re.sub(r'\s+', '', house_number)
+    if compact.startswith(('वपर', 'वपरर', 'वाड', 'वाडड', 'वारड', 'वार्ड')):
+        ward_number = re.search(r'\d+', house_number)
+        return f"वार्ड {ward_number.group(0)}" if ward_number else 'वार्ड'
+    if any(term in compact for term in ('मपग', 'भाग')):
+        return ''
+
+    def replace_kar_suffix(match):
+        return ' के' if match.group(1) else 'के'
+
+    house_number = re.sub(r'(?<=\d)(\s*)कर$', replace_kar_suffix, house_number)
+    return re.sub(r'\s+', ' ', house_number).strip()
+
+
 def _normalize_gender(value):
     text = str(value or '')
     compact = re.sub(r'\s+', '', text)
@@ -632,7 +652,7 @@ def _parse_without_photo_demographics(value):
 
     for idx, part in enumerate(parts):
         if not age:
-            age_match = re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]?\s*(\d{1,3})', part)
+            age_match = re.search(rf'{WITHOUT_PHOTO_AGE_LABEL_PATTERN}\s*[:：]?\s*(\d{{1,3}})', part)
             if age_match:
                 age = age_match.group(1)
                 for next_part in parts[idx + 1:]:
@@ -641,13 +661,13 @@ def _parse_without_photo_demographics(value):
                         if gender:
                             continue
                     if not house_number:
-                        cleaned = _clean_house_number(next_part)
+                        cleaned = _clean_without_photo_house_number(next_part)
                         if cleaned and cleaned != '.':
                             house_number = cleaned
                             break
 
     if not age:
-        age_match = re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]?\s*(\d{1,3})', text)
+        age_match = re.search(rf'{WITHOUT_PHOTO_AGE_LABEL_PATTERN}\s*[:：]?\s*(\d{{1,3}})', text)
         if age_match:
             age = age_match.group(1)
 
@@ -655,10 +675,10 @@ def _parse_without_photo_demographics(value):
         gender = _without_photo_gender(text)
 
     if not house_number:
-        age_line = next((part for part in parts if re.search(r'(?:आयु|आयप|आयच|आजच)', part)), '')
+        age_line = next((part for part in parts if re.search(WITHOUT_PHOTO_AGE_LABEL_PATTERN, part)), '')
         nums = re.findall(r'\d+\s*[A-Za-z\u0900-\u097F]*', text.replace(age_line, ' '))
         if nums:
-            house_number = _clean_house_number(nums[-1])
+            house_number = _clean_without_photo_house_number(nums[-1])
 
     return age, gender, house_number
 
@@ -714,7 +734,7 @@ def _is_without_photo_label_text(value):
         return True
     if re.match(r'^(?:ललग|लिंग|मकपन|मकरन|सनखयप|ससखजर)\s*[:：]?', text.strip()):
         return True
-    if re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]', text):
+    if re.search(rf'{WITHOUT_PHOTO_AGE_LABEL_PATTERN}\s*[:：]', text):
         return True
     return bool(_extract_epic(text)) or bool(re.fullmatch(r'\s*\d{1,5}\s*', text))
 
@@ -763,7 +783,7 @@ def _parse_without_photo_card(blocks, bbox, image=None, dpi=250):
         block_relation = _without_photo_relation_from_label(text)
         if block_relation:
             relation = block_relation
-        if re.search(r'(?:आयु|आयप|आयच|आजच)\s*[:：]', text):
+        if re.search(rf'{WITHOUT_PHOTO_AGE_LABEL_PATTERN}\s*[:：]', text):
             age, gender, house_number = _parse_without_photo_demographics(text)
 
     if not any((age, gender, house_number)):
@@ -1297,6 +1317,45 @@ def _fill_missing_house_numbers(cells):
             cell['house_number'] = last_house
 
 
+def _clean_numeric_field(value, max_digits=None, max_value=None):
+    text = str(value or '').translate(DEVANAGARI_DIGITS)
+    match = re.search(r'\d+', text)
+    if not match:
+        return ''
+    number = match.group(0)
+    if max_digits and len(number) > max_digits:
+        return ''
+    if max_value is not None and int(number) > max_value:
+        return ''
+    return number
+
+
+def _clean_epic_field(value):
+    text = str(value or '').upper().replace(' ', '')
+    epic = _extract_epic(text)
+    return epic or str(value or '').strip()
+
+
+def _normalize_without_photo_cell_fields(cells):
+    for cell in cells:
+        serial = _clean_numeric_field(cell.get('serial') or cell.get('Serial'), max_digits=5)
+        if serial:
+            cell['serial'] = serial
+
+        epic = _clean_epic_field(cell.get('epic') or cell.get('EPIC'))
+        if epic:
+            cell['epic'] = epic
+
+        age = _clean_numeric_field(cell.get('age') or cell.get('Age'), max_digits=3, max_value=125)
+        cell['age'] = age
+
+        gender = _normalize_gender(cell.get('gender') or cell.get('Gender'))
+        cell['gender'] = gender
+
+        house_number = cell.get('house_number') or cell.get('House Number')
+        cell['house_number'] = _clean_without_photo_house_number(house_number)
+
+
 def _dedupe_full_cells_latest_by_serial(cells):
     first_indexes = {}
     deduped = []
@@ -1764,7 +1823,9 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf
                 'eta': round(eta, 1),
             }
 
-        if not include_area and is_with_photo:
+        if not include_area and is_without_photo:
+            _normalize_without_photo_cell_fields(all_cells)
+        if not include_area and (is_with_photo or is_without_photo):
             _fill_missing_house_numbers(all_cells)
         if not include_area:
             all_cells = _dedupe_full_cells_latest_by_serial(all_cells)
