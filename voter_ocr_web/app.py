@@ -52,12 +52,22 @@ ACTION_CODES = {'E', 'S', 'R', 'O'}
 DEVANAGARI_DIGITS = str.maketrans('०१२३४५६७८९', '0123456789')
 PDF_MODE_WITH_PHOTO = 'with_photo'
 PDF_MODE_WITHOUT_PHOTO = 'without_photo'
-WITHOUT_PHOTO_AGE_LABEL_PATTERN = r'(?:आयु|आयप|आयच|आजच|आखप|आखच|आखु)'
+WITHOUT_PHOTO_AGE_LABEL_PATTERN = r'(?:आयु|आयप|आयच|आजच|आजप|आखप|आखच|आखु)'
+HEADER_DATA_COLUMNS = [
+    'जिला परिषद का नाम',
+    'जि० प० सदस्य निर्वाचन क्षेत्र',
+    'पंचायत समिति का नाम',
+    'पं० स० सदस्य निर्वाचन क्षेत्र',
+    'ग्राम पंचायत',
+    'वार्ड क्रमांक',
+]
 AREA_ONLY_EXPORT_COLUMNS = ['Serial', 'List Type', 'Action', 'Area']
+HEADER_AREA_EXPORT_COLUMNS = HEADER_DATA_COLUMNS + AREA_ONLY_EXPORT_COLUMNS
 FULL_EXPORT_COLUMNS = [
     'WARD_NO', 'PART_NO', 'Page', 'List Type', 'Action', 'Serial', 'EPIC',
     'Name', 'Relation', 'F_NAME', 'House Number', 'Age', 'Gender'
 ]
+HEADER_FULL_EXPORT_COLUMNS = HEADER_DATA_COLUMNS + FULL_EXPORT_COLUMNS[2:]
 
 
 def pdf_page_to_image(pdf_path, page_num=0, dpi=250):
@@ -75,6 +85,11 @@ def pdf_page_to_image(pdf_path, page_num=0, dpi=250):
 
 def ocr_image(img):
     raw = pytesseract.image_to_string(img, lang='eng+hin')
+    return raw.strip()
+
+
+def ocr_image_psm(img, psm):
+    raw = pytesseract.image_to_string(img, lang='eng+hin', config=f'--psm {psm}')
     return raw.strip()
 
 
@@ -98,6 +113,160 @@ def _parse_pdf_mode(value):
     if text in ('with_photo', 'withphoto', 'photo'):
         return PDF_MODE_WITH_PHOTO
     return ''
+
+
+def _header_blank_data():
+    return {column: '' for column in HEADER_DATA_COLUMNS}
+
+
+def _clean_header_name_value(value):
+    value = (value or '').translate(DEVANAGARI_DIGITS)
+    value = re.sub(r'\b[a-zA-Z]+\b', '', value)
+    value = re.sub(r'[|_*]+', ' ', value)
+    value = re.sub(r'\s+', ' ', value).strip(' .:-।\t')
+    tokens = value.split()
+    noise_tokens = {'जि', 'प', 'प०', 'पं', 'स', 'स०', 'सं', 'सदस्य', 'निर्वाचन', 'क्षेत्र'}
+
+    def is_noise_token(token):
+        normalized = token.strip(' .:-।\t»›>').replace('0', '०')
+        devanagari = re.sub(r'[^\u0900-\u097F०-९]', '', normalized)
+        if normalized in noise_tokens or devanagari in noise_tokens:
+            return True
+        return bool(re.fullmatch(r'[जिपंस०]+', devanagari)) and len(devanagari) <= 3
+
+    while tokens and is_noise_token(tokens[-1]):
+        tokens.pop()
+    return ' '.join(tokens).strip(' .:-।\t')
+
+
+def _is_valid_header_name(value):
+    value = _clean_header_name_value(value)
+    devanagari = len(re.findall(r'[\u0900-\u097F]', value))
+    latin = len(re.findall(r'[A-Za-z]', value))
+    return devanagari >= 2 and latin == 0
+
+
+def _header_name_score(value):
+    value = _clean_header_name_value(value)
+    devanagari = len(re.findall(r'[\u0900-\u097F]', value))
+    return devanagari * 4 + len(value)
+
+
+def _last_number(value):
+    matches = re.findall(r'\d+', (value or '').translate(DEVANAGARI_DIGITS))
+    return matches[-1] if matches else ''
+
+
+def _first_line_with(lines, *required):
+    for line in lines:
+        if all(term in line for term in required):
+            return line
+    return ''
+
+
+def _value_after_colon_until(line, stop_terms=()):
+    if ':' not in line:
+        return ''
+    value = line.split(':', 1)[1]
+    for stop in stop_terms:
+        if stop and stop in value:
+            value = value.split(stop, 1)[0]
+    return _clean_header_name_value(value)
+
+
+def _best_header_name_from_crop(img, bbox, stop_terms=()):
+    crop = img.crop(bbox).convert('L').filter(ImageFilter.SHARPEN)
+    crop = ImageEnhance.Contrast(crop).enhance(1.8)
+    candidates = []
+    for psm in (6, 7, 11):
+        try:
+            text = ocr_image_psm(crop, psm)
+        except Exception:
+            continue
+        for line in text.splitlines():
+            line = re.sub(r'\s+', ' ', line.translate(DEVANAGARI_DIGITS)).strip()
+            value = _value_after_colon_until(line, stop_terms)
+            if _is_valid_header_name(value):
+                candidates.append(value)
+    if not candidates:
+        return ''
+    return max(candidates, key=_header_name_score)
+
+
+def extract_first_page_header_data(pdf_path, dpi=250):
+    """Extract panchayat header columns from the first PDF page."""
+    img = pdf_page_to_image(pdf_path, page_num=0, dpi=max(200, min(dpi, 300)))
+    if img is None:
+        return _header_blank_data()
+
+    width, height = img.size
+    table_crop = img.crop((
+        int(width * 0.025),
+        int(height * 0.075),
+        int(width * 0.975),
+        int(height * 0.215),
+    ))
+
+    text_parts = []
+    for source_img, psm in ((table_crop, 6), (img, 11)):
+        try:
+            text_parts.append(ocr_image_psm(source_img, psm))
+        except Exception:
+            pass
+    lines = [
+        re.sub(r'\s+', ' ', line.translate(DEVANAGARI_DIGITS)).strip()
+        for text in text_parts
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    district_line = _first_line_with(lines, 'जिला', 'परिषद') or _first_line_with(lines, 'जिलापरिषद')
+    zilla_member_line = _first_line_with(lines, 'सदस्य', 'निर्वाचन', 'क्षेत्र')
+    panchayat_line = _first_line_with(lines, 'पंचायत', 'समिति')
+    panchayat_member_line = ''
+    member_lines = [line for line in lines if 'सदस्य' in line and 'निर्वाचन' in line and 'क्षेत्र' in line]
+    if len(member_lines) > 1:
+        panchayat_member_line = member_lines[1]
+    else:
+        panchayat_member_line = _first_line_with(lines, 'पं', 'सदस्य', 'निर्वाचन')
+    gram_line = _first_line_with(lines, 'ग्राम', 'पंचायत') or _first_line_with(lines, 'ग्रामपंचायत')
+    ward_line = _first_line_with(lines, 'वार्ड', 'क्रमांक') or _first_line_with(lines, 'वार्ड')
+
+    district = _value_after_colon_until(district_line, ('सदस्य', 'निर्वाचन', 'क्षेत्र'))
+    panchayat = _value_after_colon_until(panchayat_line, ('पं', 'सदस्य', 'निर्वाचन', 'क्षेत्र'))
+    gram_panchayat = _value_after_colon_until(gram_line, ('वार्ड', 'क्रमांक'))
+
+    left = int(width * 0.03)
+    middle = int(width * 0.50)
+    top = int(height * 0.075)
+    row_height = int(height * 0.045)
+    if not _is_valid_header_name(district):
+        district = _best_header_name_from_crop(
+            img,
+            (left, top, middle, top + row_height),
+            ('सदस्य', 'निर्वाचन', 'क्षेत्र'),
+        )
+    if not _is_valid_header_name(panchayat):
+        panchayat = _best_header_name_from_crop(
+            img,
+            (left, top + row_height, middle, top + row_height * 2),
+            ('पं', 'सदस्य', 'निर्वाचन', 'क्षेत्र'),
+        )
+    if not _is_valid_header_name(gram_panchayat):
+        gram_panchayat = _best_header_name_from_crop(
+            img,
+            (left, top + row_height * 2, middle, top + row_height * 3 + int(height * 0.01)),
+            ('वार्ड', 'क्रमांक'),
+        )
+
+    return {
+        'जिला परिषद का नाम': district,
+        'जि० प० सदस्य निर्वाचन क्षेत्र': _last_number(zilla_member_line),
+        'पंचायत समिति का नाम': panchayat,
+        'पं० स० सदस्य निर्वाचन क्षेत्र': _last_number(panchayat_member_line),
+        'ग्राम पंचायत': gram_panchayat,
+        'वार्ड क्रमांक': _last_number(ward_line),
+    }
 
 
 def _group_close_numbers(values, tolerance=1.2):
@@ -1468,6 +1637,23 @@ def _uploaded_basename(filename, fallback='upload.pdf'):
     return safe_name
 
 
+def _safe_relative_parts(path):
+    text = str(path or '').replace('\\', '/').replace('\x00', '').strip()
+    parts = []
+    for part in text.split('/'):
+        safe_part = secure_filename(part.strip())
+        if safe_part and safe_part not in ('.', '..'):
+            parts.append(safe_part)
+    return parts
+
+
+def _relative_subdir_from_upload_name(filename):
+    parts = _safe_relative_parts(filename)
+    if len(parts) <= 2:
+        return ''
+    return os.path.join(*parts[1:-1])
+
+
 def _file_stem(filename, fallback='voter_ocr_results'):
     base_name = _uploaded_basename(filename, fallback=f'{fallback}.pdf')
     stem, _ext = os.path.splitext(base_name)
@@ -1545,6 +1731,15 @@ def _selected_pdf_names(relative_paths=None):
     return set(names)
 
 
+def _selected_pdf_relative_paths(relative_paths=None):
+    selected = set()
+    for path in _clean_relative_paths(relative_paths):
+        parts = _safe_relative_parts(path)
+        if len(parts) > 1 and parts[-1].lower().endswith('.pdf'):
+            selected.add('/'.join(parts[1:]))
+    return selected
+
+
 def _candidate_source_folders(folder_names):
     if not folder_names:
         return []
@@ -1572,15 +1767,20 @@ def _resolve_selected_source_folder(source_folder_hint='', relative_paths=None):
 
     best_folder = ''
     best_score = 0
+    selected_relative_paths = _selected_pdf_relative_paths(relative_paths)
     for folder in candidates:
-        try:
-            local_files = {
-                entry.name for entry in os.scandir(folder)
-                if entry.is_file() and entry.name.lower().endswith('.pdf')
-            }
-        except OSError:
-            continue
+        local_files = set()
+        local_relative_paths = set()
+        for root, _dirs, files in os.walk(folder):
+            for filename in files:
+                if not filename.lower().endswith('.pdf'):
+                    continue
+                local_files.add(filename)
+                rel_path = os.path.relpath(os.path.join(root, filename), folder)
+                local_relative_paths.add(rel_path.replace(os.sep, '/'))
         score = len(selected_files & local_files)
+        if selected_relative_paths:
+            score += len(selected_relative_paths & local_relative_paths) * 3
         if score > best_score:
             best_folder = folder
             best_score = score
@@ -1623,10 +1823,31 @@ def _batch_dirs(batch_id=None, include_area=False, source_folder_hint='', relati
     return batch_id, staging_dir, output_dir, processed_dir
 
 
-def _rows_from_cells(cells):
+def _prepend_header_data(rows, header_data):
+    header_data = header_data or {}
+    return [
+        {**{column: header_data.get(column, '') for column in HEADER_DATA_COLUMNS}, **row}
+        for row in rows
+    ]
+
+
+def _header_full_rows_from_cells(cells, header_data):
+    rows = []
+    for row in _full_rows_from_cells(cells):
+        row = dict(row)
+        row.pop('WARD_NO', None)
+        row.pop('PART_NO', None)
+        rows.append(row)
+    return _prepend_header_data(rows, header_data)
+
+
+def _rows_from_cells(cells, header_data=None, include_header_data=False):
     if cells and all(c.get('area_only') for c in cells):
-        return _area_only_rows_from_cells(cells)
+        rows = _area_only_rows_from_cells(cells)
+        return _prepend_header_data(rows, header_data) if include_header_data else rows
     if any(c.get('serial') or c.get('name') or c.get('ward_no') for c in cells):
+        if include_header_data:
+            return _header_full_rows_from_cells(cells, header_data)
         return _full_rows_from_cells(cells)
 
     include_area = any('area' in c for c in cells)
@@ -1689,25 +1910,52 @@ def _area_only_rows_from_cells(cells):
     return rows
 
 
-def _dataframe_from_cells(cells, area_only=False):
+def _dataframe_from_cells(cells, area_only=False, header_data=None, include_header_data=False):
     if area_only or (cells and all(c.get('area_only') for c in cells)):
-        return pd.DataFrame(_area_only_rows_from_cells(cells), columns=AREA_ONLY_EXPORT_COLUMNS)
+        rows = _area_only_rows_from_cells(cells)
+        if include_header_data:
+            return pd.DataFrame(
+                _prepend_header_data(rows, header_data),
+                columns=HEADER_AREA_EXPORT_COLUMNS,
+            )
+        return pd.DataFrame(rows, columns=AREA_ONLY_EXPORT_COLUMNS)
     if any(c.get('serial') or c.get('name') or c.get('ward_no') for c in cells):
+        if include_header_data:
+            return pd.DataFrame(
+                _header_full_rows_from_cells(cells, header_data),
+                columns=HEADER_FULL_EXPORT_COLUMNS,
+            )
         return pd.DataFrame(_full_rows_from_cells(cells), columns=FULL_EXPORT_COLUMNS)
-    return pd.DataFrame(_rows_from_cells(cells))
+    return pd.DataFrame(_rows_from_cells(cells, header_data, include_header_data))
 
 
-def _write_excel(cells, output_path, area_only=False):
-    df = _dataframe_from_cells(cells, area_only=area_only)
+def _write_excel(cells, output_path, area_only=False, header_data=None, include_header_data=False):
+    df = _dataframe_from_cells(
+        cells,
+        area_only=area_only,
+        header_data=header_data,
+        include_header_data=include_header_data,
+    )
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='OCR Results')
 
 
-def _save_processed_excel_and_pdf(staged_path, original_name, output_dir, processed_dir, result):
-    excel_path = _unique_path(output_dir, f'{_file_stem(original_name)}.xlsx')
-    _write_excel(result['cells'], excel_path, area_only=result.get('area_only', False))
+def _save_processed_excel_and_pdf(staged_path, original_name, output_dir, processed_dir, result, relative_subdir=''):
+    excel_dir = os.path.join(output_dir, relative_subdir) if relative_subdir else output_dir
+    processed_target_dir = os.path.join(processed_dir, relative_subdir) if relative_subdir else processed_dir
+    os.makedirs(excel_dir, exist_ok=True)
+    os.makedirs(processed_target_dir, exist_ok=True)
 
-    processed_path = _unique_path(processed_dir, original_name)
+    excel_path = _unique_path(excel_dir, f'{_file_stem(original_name)}.xlsx')
+    _write_excel(
+        result['cells'],
+        excel_path,
+        area_only=result.get('area_only', False),
+        header_data=result.get('header_data'),
+        include_header_data=result.get('include_header_data', False),
+    )
+
+    processed_path = _unique_path(processed_target_dir, original_name)
     shutil.move(staged_path, processed_path)
 
     return {
@@ -1719,7 +1967,7 @@ def _save_processed_excel_and_pdf(staged_path, original_name, output_dir, proces
     }
 
 
-def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf_mode=''):
+def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf_mode='', include_header_data=False):
     try:
         doc = fitz.open(filepath)
     except Exception as exc:
@@ -1742,6 +1990,18 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf
         if page_from >= total_pages:
             yield {'type': 'error', 'message': 'From page exceeds PDF page count'}
             return
+
+        if include_header_data:
+            include_area = False
+            pdf_mode = PDF_MODE_WITHOUT_PHOTO
+
+        header_data = _header_blank_data()
+        header_data_error = ''
+        if include_header_data:
+            try:
+                header_data = extract_first_page_header_data(filepath, dpi)
+            except Exception as exc:
+                header_data_error = f'Could not extract first-page header data: {exc}'
 
         total = page_to_actual - page_from + 1
         all_cells = []
@@ -1840,6 +2100,9 @@ def _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=False, pdf
             'include_area': include_area,
             'area_only': include_area,
             'pdf_mode': selected_pdf_mode or '',
+            'include_header_data': include_header_data,
+            'header_data': header_data,
+            'header_data_error': header_data_error,
         }
     finally:
         doc.close()
@@ -1882,10 +2145,19 @@ def process():
     dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
     pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
+    include_header_data = _parse_bool(request.form.get('include_header_data'))
 
     def generate():
         result = None
-        for event in _iter_extract_pdf(filepath, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
+        for event in _iter_extract_pdf(
+            filepath,
+            page_from,
+            page_to,
+            dpi,
+            include_area=include_area,
+            pdf_mode=pdf_mode,
+            include_header_data=include_header_data,
+        ):
             if event['type'] == 'progress':
                 yield _sse(json.dumps(event))
             elif event['type'] == 'error':
@@ -1922,6 +2194,9 @@ def process():
             'include_area': result.get('include_area', False),
             'area_only': result.get('area_only', False),
             'pdf_mode': result.get('pdf_mode', ''),
+            'include_header_data': result.get('include_header_data', False),
+            'header_data': result.get('header_data', {}),
+            'header_data_error': result.get('header_data_error', ''),
             'filename': filename,
             'image_size': f'{imgpre.width}x{imgpre.height}'
         }))
@@ -1970,11 +2245,13 @@ def batch_process_file():
         })), mimetype='text/event-stream')
 
     original_name = _uploaded_basename(file.filename)
+    relative_subdir = _relative_subdir_from_upload_name(file.filename)
     page_from = _parse_int(request.form.get('page_from'), default=0)
     page_to = _parse_int(request.form.get('page_to'), default=0)
     dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
     pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
+    include_header_data = _parse_bool(request.form.get('include_header_data'))
     file_index = _parse_int(request.form.get('file_index'), default=1, minimum=1)
     total_files = _parse_int(request.form.get('total_files'), default=1, minimum=1)
 
@@ -2013,7 +2290,15 @@ def batch_process_file():
 
         try:
             result = None
-            for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
+            for event in _iter_extract_pdf(
+                staged_path,
+                page_from,
+                page_to,
+                dpi,
+                include_area=include_area,
+                pdf_mode=pdf_mode,
+                include_header_data=include_header_data,
+            ):
                 if event['type'] == 'progress':
                     event.update({
                         'type': 'file_progress',
@@ -2036,6 +2321,7 @@ def batch_process_file():
                 output_dir,
                 processed_dir,
                 result,
+                relative_subdir=relative_subdir,
             )
             yield _sse(json.dumps({'type': 'file_done', **success}))
         except Exception as exc:
@@ -2065,18 +2351,21 @@ def batch_process():
     dpi = _parse_int(request.form.get('dpi'), default=250, minimum=100, maximum=600)
     include_area = _parse_bool(request.form.get('include_area'))
     pdf_mode = _parse_pdf_mode(request.form.get('pdf_mode'))
+    include_header_data = _parse_bool(request.form.get('include_header_data'))
 
     batch_id, staging_dir, output_dir, processed_dir = _batch_dirs(include_area=include_area)
 
     staged_files = []
     for file_index, file in enumerate(files, start=1):
         original_name = _uploaded_basename(file.filename)
+        relative_subdir = _relative_subdir_from_upload_name(file.filename)
         staged_path = _unique_path(staging_dir, original_name)
         try:
             file.save(staged_path)
             staged_files.append({
                 'file_index': file_index,
                 'filename': original_name,
+                'relative_subdir': relative_subdir,
                 'staged_path': staged_path,
                 'error': None,
             })
@@ -2084,6 +2373,7 @@ def batch_process():
             staged_files.append({
                 'file_index': file_index,
                 'filename': original_name,
+                'relative_subdir': relative_subdir,
                 'staged_path': None,
                 'error': str(exc),
             })
@@ -2102,6 +2392,7 @@ def batch_process():
         for item in staged_files:
             file_index = item['file_index']
             original_name = item['filename']
+            relative_subdir = item.get('relative_subdir', '')
             staged_path = item['staged_path']
 
             yield _sse(json.dumps({
@@ -2116,7 +2407,15 @@ def batch_process():
                     raise RuntimeError(item['error'])
 
                 result = None
-                for event in _iter_extract_pdf(staged_path, page_from, page_to, dpi, include_area=include_area, pdf_mode=pdf_mode):
+                for event in _iter_extract_pdf(
+                    staged_path,
+                    page_from,
+                    page_to,
+                    dpi,
+                    include_area=include_area,
+                    pdf_mode=pdf_mode,
+                    include_header_data=include_header_data,
+                ):
                     if event['type'] == 'progress':
                         event.update({
                             'type': 'file_progress',
@@ -2139,6 +2438,7 @@ def batch_process():
                     output_dir,
                     processed_dir,
                     result,
+                    relative_subdir=relative_subdir,
                 )
                 successes.append(success)
                 yield _sse(json.dumps({'type': 'file_done', **success}))
@@ -2173,7 +2473,12 @@ def download(fmt):
     if not data or 'cells' not in data:
         return jsonify({'error': 'No data'}), 400
 
-    df = _dataframe_from_cells(data['cells'], area_only=_parse_bool(data.get('area_only')))
+    df = _dataframe_from_cells(
+        data['cells'],
+        area_only=_parse_bool(data.get('area_only')),
+        header_data=data.get('header_data'),
+        include_header_data=_parse_bool(data.get('include_header_data')),
+    )
     source_filename = data.get('filename') or data.get('source_filename') or 'voter_ocr_results.pdf'
 
     if fmt == 'csv':

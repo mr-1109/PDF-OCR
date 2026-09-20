@@ -193,6 +193,10 @@
                 <input class="form-check-input mt-0" type="checkbox" id="withoutPhotoInput">
                 <label class="form-check-label text-nowrap" for="withoutPhotoInput">without photo</label>
             </div>
+            <div class="d-flex align-items-center gap-2 pdf-mode-option">
+                <input class="form-check-input mt-0" type="checkbox" id="includeHeaderDataInput">
+                <label class="form-check-label text-nowrap" for="includeHeaderDataInput">include header data from first page</label>
+            </div>
             <div class="d-flex align-items-center gap-2">
                 <label class="form-label mb-0 text-nowrap">From Page:</label>
                 <input type="number" id="pageFromInput" class="form-control form-control-sm" value="0" min="0">
@@ -341,14 +345,23 @@ const folderZone = document.getElementById('folderUploadZone');
 const folderInput = document.getElementById('folderInput');
 const withPhotoInput = document.getElementById('withPhotoInput');
 const withoutPhotoInput = document.getElementById('withoutPhotoInput');
+const includeHeaderDataInput = document.getElementById('includeHeaderDataInput');
 
 withPhotoInput.addEventListener('change', () => syncPdfMode('with_photo'));
 withoutPhotoInput.addEventListener('change', () => syncPdfMode('without_photo'));
+includeHeaderDataInput.addEventListener('change', () => {
+    if (includeHeaderDataInput.checked) {
+        withoutPhotoInput.checked = true;
+        withPhotoInput.checked = false;
+    }
+});
 
 function syncPdfMode(changedMode) {
     if (changedMode === 'with_photo') {
-        if (withPhotoInput.checked) withoutPhotoInput.checked = false;
-        else withoutPhotoInput.checked = true;
+        if (withPhotoInput.checked) {
+            withoutPhotoInput.checked = false;
+            includeHeaderDataInput.checked = false;
+        } else withoutPhotoInput.checked = true;
     } else {
         if (withoutPhotoInput.checked) withPhotoInput.checked = false;
         else withPhotoInput.checked = true;
@@ -357,6 +370,10 @@ function syncPdfMode(changedMode) {
 
 function selectedPdfMode() {
     return withoutPhotoInput.checked ? 'without_photo' : 'with_photo';
+}
+
+function headerDataSelected() {
+    return includeHeaderDataInput.checked;
 }
 
 zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
@@ -431,6 +448,9 @@ async function processPDF(includeArea = false) {
     const file = fileInput.files[0];
     if (!file) return;
 
+    const includeHeaderData = headerDataSelected();
+    const effectiveIncludeArea = includeHeaderData ? false : includeArea;
+    const effectivePdfMode = includeHeaderData ? 'without_photo' : selectedPdfMode();
     const btn = document.getElementById(includeArea ? 'processWithAreaBtn' : 'processBtn');
     document.getElementById('processBtn').disabled = true;
     document.getElementById('processWithAreaBtn').disabled = true;
@@ -438,7 +458,7 @@ async function processPDF(includeArea = false) {
 
     const progressArea = document.getElementById('progressArea');
     progressArea.classList.remove('d-none');
-    document.getElementById('progressText').textContent = includeArea ? 'Starting with Area...' : 'Starting...';
+    document.getElementById('progressText').textContent = effectiveIncludeArea ? 'Starting with Area...' : 'Starting...';
     document.getElementById('progressBar').style.width = '0%';
     document.getElementById('progressBar').textContent = '0%';
     document.getElementById('progressElapsed').textContent = 'Elapsed: 0s';
@@ -449,8 +469,9 @@ async function processPDF(includeArea = false) {
     form.append('page_from', document.getElementById('pageFromInput').value || '0');
     form.append('page_to', document.getElementById('pageToInput').value || '0');
     form.append('dpi', document.getElementById('dpiInput').value || '250');
-    form.append('pdf_mode', selectedPdfMode());
-    if (includeArea) form.append('include_area', '1');
+    form.append('pdf_mode', effectivePdfMode);
+    if (effectiveIncludeArea) form.append('include_area', '1');
+    if (includeHeaderData) form.append('include_header_data', '1');
 
     // POST the file, SSE response streams progress
     fetch('/process', {
@@ -536,6 +557,9 @@ async function processFolder(includeArea = false) {
     const pageFrom = document.getElementById('pageFromInput').value || '0';
     const pageTo = document.getElementById('pageToInput').value || '0';
     const dpi = document.getElementById('dpiInput').value || '250';
+    const includeHeaderData = headerDataSelected();
+    const effectiveIncludeArea = includeHeaderData ? false : includeArea;
+    const effectivePdfMode = includeHeaderData ? 'without_photo' : selectedPdfMode();
     const totalFiles = folderFiles.length;
     const relativePaths = folderFiles.map(file => file.webkitRelativePath || file.name);
     const firstRelativePath = relativePaths[0] || '';
@@ -550,8 +574,9 @@ async function processFolder(includeArea = false) {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 total_files: totalFiles,
-                include_area: includeArea,
-                pdf_mode: selectedPdfMode(),
+                include_area: effectiveIncludeArea,
+                include_header_data: includeHeaderData,
+                pdf_mode: effectivePdfMode,
                 source_folder_hint: sourceFolderHint,
                 relative_paths: relativePaths
             })
@@ -577,8 +602,9 @@ async function processFolder(includeArea = false) {
             form.append('page_from', pageFrom);
             form.append('page_to', pageTo);
             form.append('dpi', dpi);
-            form.append('pdf_mode', selectedPdfMode());
-            form.append('include_area', includeArea ? '1' : '0');
+            form.append('pdf_mode', effectivePdfMode);
+            form.append('include_area', effectiveIncludeArea ? '1' : '0');
+            form.append('include_header_data', includeHeaderData ? '1' : '0');
 
             let settled = false;
 
@@ -786,6 +812,8 @@ async function downloadFile(fmt) {
                 header: currentData.header,
                 include_area: Boolean(currentData.include_area),
                 area_only: Boolean(currentData.area_only),
+                include_header_data: Boolean(currentData.include_header_data),
+                header_data: currentData.header_data || {},
                 filename: currentData.filename
             })
         });
